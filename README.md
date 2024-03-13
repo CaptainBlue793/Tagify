@@ -1,2 +1,2 @@
 # Tagify
-Topic Modelling and Labeling Web-App
+Topic Modelling and Labelling Web-App
