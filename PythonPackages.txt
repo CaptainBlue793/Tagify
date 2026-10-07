@@ -1,9 +1,1 @@
-Install the python packages as required:
-
-streamlit
-gensim
-pandas
-os
-re
-base64
-heapq
+-r requirements.txt

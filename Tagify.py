@@ -1,155 +1,116 @@
-"""Topic Modelling and Labelling App"""
+"""Tagify's Streamlit workspace. Run with streamlit run Tagify.py."""
+import json
+from pathlib import Path
 
-import base64
-import heapq
-import re
-
-# Importing packages
-import gensim
+import pandas as pd
 import streamlit as st
-from gensim import corpora, models
-from Tags import industries
+
+from analysis import analyze, parse_taxonomy
+
+SAMPLE = """Hospitals are adopting telemedicine and electronic health records to improve patient care.
+Doctors and nurses use medical devices to monitor patients remotely. Clinical trials evaluate new medicine.
+
+Machine learning and artificial intelligence help software teams analyze healthcare data.
+Cloud computing supports secure data analytics, while cybersecurity protects patient information.
+
+Renewable energy and solar energy can reduce a hospital's carbon footprint.
+Sustainability and energy efficiency are becoming part of healthcare policy.
+
+Software engineering teams build secure databases and deploy cloud services for clinical research.
+Pharmaceutical researchers study drug development and personalized medicine through biotechnology.
+Solar panels and smart grid systems help hospitals manage electricity consumption and renewable resources."""
 
 
-# ...
-# Topic Modelling on a given text
 def preprocess_text(text):
-    # Replace this with your own preprocessing code
-    # This example simply tokenizes the text and removes stop words
-    tokens = gensim.utils.simple_preprocess(text)
-    stop_words = gensim.parsing.preprocessing.STOPWORDS
-    preprocessed_text = [[token for token in tokens if token not in stop_words]]
-    return preprocessed_text
+    from analysis import tokenize
+    return [tokenize(text)]
 
 
 def perform_topic_modeling(transcript_text, num_topics=5, num_words=10):
-    # Preprocess the transcript text
-    # Replace this with your own preprocessing code
-    preprocessed_text = preprocess_text(transcript_text)
-    # Create a dictionary of all unique words in the transcripts
-    dictionary = corpora.Dictionary(preprocessed_text)
-    # Convert the preprocessed transcripts into a bag-of-words representation
-    corpus = [dictionary.doc2bow(text) for text in preprocessed_text]
-    # Train an LDA model with the specified number of topics
-    lda_model = models.LdaModel(
-        corpus=corpus, id2word=dictionary, num_topics=num_topics
-    )
-    # Extract the most probable words for each topic
-    Topics = []
-    for idx, Topic in lda_model.print_topics(-1, num_words=num_words):
-        # Extract the top words for each topic and store in a list
-        topic_words = [
-            word.split("*")[1].replace('"', "").strip() for word in Topic.split("+")
-        ]
-        Topics.append((f"Topic {idx}", topic_words))
-    return Topics
+    return [(t["name"], t["words"]) for t in analyze(transcript_text, num_topics, num_words)["topics"]]
 
 
-def label_topic(labelling_text):
-    """
-    Given a piece of text, this function returns the top five industry labels that best match the topics discussed
-    in the text.
-    """
-    # Count the number of occurrences of each keyword in the text for each industry
-    counts = {}
-    for industry, keywords in industries.items():
-        count = sum(
-            [
-                1
-                for keyword in keywords
-                if re.search(r"\b{}\b".format(keyword), labelling_text, re.IGNORECASE)
-            ]
-        )
-        counts[industry] = count
-    # Get the top five industries based on their counts
-    top_industries = heapq.nlargest(5, counts, key=counts.get)
-
-    # If only one industry was found, return it
-    if len(top_industries) == 1:
-        return top_industries[0]
-    # If five industries were found, return them both
-    else:
-        return top_industries
+def label_topic(text):
+    from analysis import score_industries
+    return [row["industry"] for row in score_industries(text)[:5]]
 
 
-# ...
+def main():
+    st.set_page_config(page_title="Tagify · Text intelligence", page_icon="🏷️", layout="wide")
+    st.markdown(f"<style>{Path(__file__).with_name('style.css').read_text()}</style>", unsafe_allow_html=True)
+    st.caption("TAGIFY / TEXT INTELLIGENCE")
+    st.title("Find the signal in your text.")
+    st.write("Explore themes, discover industries, and inspect the words behind every match.")
+    with st.sidebar:
+        st.header("Analysis settings")
+        topic_count = st.slider("Maximum topics", 1, 8, 4)
+        word_count = st.slider("Words per topic", 3, 12, 6)
+        limit = st.slider("Industry results", 1, 15, 5)
+        custom = st.text_area("Additional industries", placeholder="Robotics: robot, actuator, robotics", help="One industry per line; separate its keywords with commas.")
+        st.caption("English topic analysis. Industry matches are keyword evidence, not probabilities.")
+    left, right = st.columns([3, 2], gap="large")
+    with left:
+        st.subheader("Your source")
+        if st.button("Try an example"):
+            st.session_state["source"] = SAMPLE
+        upload = st.file_uploader("Or upload text", type=["txt", "md"])
+        source = st.text_area("Text to analyze", key="source", height=300, max_chars=300_000)
+        if upload is not None:
+            if upload.size > 2_000_000:
+                st.error("Choose a text file smaller than 2 MB.")
+                source = ""
+            else:
+                try:
+                    source = upload.getvalue().decode("utf-8-sig")
+                    st.caption(f"Using uploaded file: {upload.name}")
+                except UnicodeDecodeError:
+                    st.error("Save your text file as UTF-8 and upload it again.")
+                    source = ""
+        if st.button("Analyze text", type="primary", use_container_width=True):
+            try:
+                with st.spinner("Discovering themes and matching industries…"):
+                    st.session_state["analysis"] = analyze(source, topic_count, word_count, parse_taxonomy(custom))
+            except ValueError as exc:
+                st.error(str(exc))
+        st.caption("Uploaded text is not written to disk.")
+    with right:
+        st.subheader("A clearer view")
+        st.info("Start with an article, transcript, or research note. Longer text gives topic modeling more evidence.")
+        st.markdown("**01 · Themes**  \nRepeatable topic analysis with meaningful keywords.\n\n**02 · Industry evidence**  \nSee exactly which phrases matched.\n\n**03 · Take it with you**  \nDownload structured results for your next workflow.")
+    result = st.session_state.get("analysis")
+    if not result:
+        return
+    st.divider()
+    metrics = st.columns(4)
+    for col, label, value in zip(metrics, ["Words", "Distinct terms", "Text segments", "Industry matches"], [result["word_count"], result["unique_terms"], result["segments"], len(result["industries"])]):
+        col.metric(label, value)
+    st.caption("Results reflect the last analysis. Analyze again after editing the source or settings.")
+    themes, labels, details = st.tabs(["Themes", "Industries", "Export & source"])
+    with themes:
+        if result["mode"] == "keywords":
+            st.info("This source has limited topic evidence. Showing key terms instead of fitting several topics.")
+        for topic in result["topics"]:
+            with st.container(border=True):
+                st.subheader(topic["name"])
+                st.write(" · ".join(topic["words"]))
+                st.caption(f"Share of modeled topic weight: {topic['weight']:.0%}")
+        st.subheader("Prominent terms")
+        st.bar_chart(pd.DataFrame(result["keywords"]).set_index("term")["count"], color="#f4b860", horizontal=True)
+    with labels:
+        rows = result["industries"][:limit]
+        if not rows:
+            st.info("No industry keywords matched. Add a relevant industry in the sidebar or try a longer source.")
+        for row in rows:
+            with st.container(border=True):
+                st.markdown(f"**{row['industry']}** — {row['score']} distinct keyword matches")
+                st.write(", ".join(row["matched_keywords"]))
+                st.caption(f"Total occurrences: {row['occurrences']}")
+    with details:
+        a, b = st.columns(2)
+        a.download_button("Download analysis JSON", json.dumps(result, indent=2, ensure_ascii=False), "tagify-analysis.json", "application/json")
+        b.download_button("Download industry CSV", pd.DataFrame(result["industries"], columns=["industry", "score", "occurrences", "matched_keywords"]).to_csv(index=False), "tagify-industries.csv", "text/csv")
+        st.text_area("Analyzed source", result["source"], height=220, disabled=True)
 
-# Streamlit Code
-st.set_page_config(layout="wide")
 
-# Font Style
-with open("font.css") as f:
-    st.markdown("<style>{}</style>".format(f.read()), unsafe_allow_html=True)
-
-
-# Display Background
-def add_bg_from_local(image_file):
-    with open(image_file, "rb") as image_file:
-        encoded_string = base64.b64encode(image_file.read())
-    st.markdown(
-        f"""
-    <style>
-    .stApp {{
-        background-image: url(data:image/{"png"};base64,{encoded_string.decode()});
-        background-size: cover;
-    }}
-    </style>
-    """,
-        unsafe_allow_html=True,
-    )
-
-
-add_bg_from_local("Images/background.png")
-# Main content
-st.markdown(
-    """
-    <style>
-    .tagify-title {
-        font-size: 62px;
-        text-align: center;
-        transition: transform 0.2s ease-in-out;
-    }
-    .tagify-title span {
-        transition: color 0.2s ease-in-out;
-    }
-    .tagify-title:hover span {
-        color: #f5fefd; /* Hover color */
-    }
-    .tagify-title:hover {
-        transform: scale(1.15);
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-text = "Tagify"  # Text to be styled
-colored_text = ''.join(
-    ['<span style="color: hsl({}, 70%, 50%);">{}</span>'.format(20 + (i * 30 / len(text)), char) for i, char in
-     enumerate(text)])
-colored_text_with_malt = colored_text + ' <span style="color: hsl(40, 70%, 50%);">&#9778;</span>'
-st.markdown(f'<h1 class="tagify-title">{colored_text_with_malt}</h1>', unsafe_allow_html=True)
-
-st.markdown(
-    '<h2 style="font-size:30px;color: #F5FEFD; text-align: center;">Topic Modelling and Labelling</h2>',
-    unsafe_allow_html=True,
-)
-
-input_text = st.text_area("Paste your Input Text", height=200)
-if st.button("Analyze Text"):
-    col1, col2 = st.columns([2, 2])
-    with col1:
-        st.info("Text is below")
-        st.write(input_text)
-    with col2:
-        # Perform topic modeling on the transcript text
-        topics = perform_topic_modeling(input_text)
-        # Display the resulting topics in the app
-        st.info("Topics in the Text")
-        for topic in topics:
-            st.success(f"{topic[0]}: {', '.join(topic[1])}", icon="✅")
-        # Label the text with the top five industries
-        label = label_topic(input_text)
-        st.info("Top Five Industries")
-        st.success(f"{', '.join(label)}", icon="✅")
-
+if __name__ == "__main__":
+    main()
